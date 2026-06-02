@@ -8,22 +8,31 @@ import net.bytebuddy.asm.Advice;
 
 public class DubboInterceptor {
 
+    private static final int IDX_START_TIME = 0;
+    private static final int IDX_TRACE_ID = 1;
+    private static final int IDX_SPAN_ID = 2;
+    private static final int IDX_PARENT_SPAN_ID = 3;
+    private static final int IDX_IS_CONSUMER = 4;
+    private static final int IDX_ORIG_TRACE_ID = 5;
+    private static final int IDX_ORIG_SPAN_ID = 6;
+    private static final int IDX_ORIG_PARENT_SPAN_ID = 7;
+
     @Advice.OnMethodEnter
     public static Object[] onEnter(@Advice.Argument(0) Object invoker,
                                    @Advice.Argument(1) Object invocation) {
-        String savedTraceId = TraceContext.getTraceId();
-        String savedSpanId = TraceContext.getSpanId();
-        String savedParentSpanId = TraceContext.getParentSpanId();
+        String origTraceId = TraceContext.getTraceId();
+        String origSpanId = TraceContext.getSpanId();
+        String origParentSpanId = TraceContext.getParentSpanId();
 
-        boolean isConsumer = isConsumerSide(invoker);
+        boolean isConsumer = determineConsumerSide(invoker, invocation);
 
         String traceId;
         String spanId = IdGenerator.generateSpanId();
         String parentSpanId;
 
         if (isConsumer) {
-            traceId = savedTraceId != null ? savedTraceId : IdGenerator.generateTraceId();
-            parentSpanId = savedSpanId;
+            traceId = origTraceId != null ? origTraceId : IdGenerator.generateTraceId();
+            parentSpanId = origSpanId;
 
             try {
                 java.lang.reflect.Method setAttachment = invocation.getClass()
@@ -41,7 +50,7 @@ public class DubboInterceptor {
 
             traceId = (incomingTraceId != null && !incomingTraceId.isEmpty())
                     ? incomingTraceId
-                    : (savedTraceId != null ? savedTraceId : IdGenerator.generateTraceId());
+                    : (origTraceId != null ? origTraceId : IdGenerator.generateTraceId());
             parentSpanId = incomingSpanId;
         }
 
@@ -55,26 +64,26 @@ public class DubboInterceptor {
                 spanId,
                 parentSpanId,
                 isConsumer,
-                savedTraceId,
-                savedSpanId,
-                savedParentSpanId
+                origTraceId,
+                origSpanId,
+                origParentSpanId
         };
     }
 
     @Advice.OnMethodExit(onThrowable = Throwable.class)
     public static void onExit(@Advice.Argument(0) Object invoker,
                               @Advice.Argument(1) Object invocation,
-                              @Advice.Enter Object[] entered,
+                              @Advice.Enter Object[] ctx,
                               @Advice.Thrown Throwable thrown,
                               @Advice.Return Object result) {
-        long startTime = (Long) entered[0];
-        String traceId = (String) entered[1];
-        String spanId = (String) entered[2];
-        String parentSpanId = (String) entered[3];
-        boolean isConsumer = (Boolean) entered[4];
-        String origTraceId = (String) entered[5];
-        String origSpanId = (String) entered[6];
-        String origParentSpanId = (String) entered[7];
+        long startTime = (Long) ctx[IDX_START_TIME];
+        String traceId = (String) ctx[IDX_TRACE_ID];
+        String spanId = (String) ctx[IDX_SPAN_ID];
+        String parentSpanId = (String) ctx[IDX_PARENT_SPAN_ID];
+        boolean isConsumer = (Boolean) ctx[IDX_IS_CONSUMER];
+        String origTraceId = (String) ctx[IDX_ORIG_TRACE_ID];
+        String origSpanId = (String) ctx[IDX_ORIG_SPAN_ID];
+        String origParentSpanId = (String) ctx[IDX_ORIG_PARENT_SPAN_ID];
 
         try {
             long duration = System.currentTimeMillis() - startTime;
@@ -128,27 +137,14 @@ public class DubboInterceptor {
                 reporter.report(span);
             }
         } finally {
-            if (isConsumer) {
-                if (origTraceId != null) {
-                    TraceContext.setTraceId(origTraceId);
-                }
-                if (origSpanId != null) {
-                    TraceContext.setSpanId(origSpanId);
-                } else {
-                    TraceContext.setSpanId(null);
-                }
-                if (origParentSpanId != null) {
-                    TraceContext.setParentSpanId(origParentSpanId);
-                } else {
-                    TraceContext.setParentSpanId(null);
-                }
-            } else {
-                TraceContext.clear();
-            }
+            TraceContext.setTraceId(origTraceId);
+            TraceContext.setSpanId(origSpanId);
+            TraceContext.setParentSpanId(origParentSpanId);
         }
     }
 
-    private static boolean isConsumerSide(Object invoker) {
+    private static boolean determineConsumerSide(Object invoker, Object invocation) {
+        // 1st priority: check URL "side" parameter (Dubbo framework always sets this)
         try {
             java.lang.reflect.Method getUrl = invoker.getClass().getMethod("getUrl");
             Object url = getUrl.invoke(invoker);
@@ -156,24 +152,43 @@ public class DubboInterceptor {
                 java.lang.reflect.Method getParameter = url.getClass()
                         .getMethod("getParameter", String.class);
                 String side = (String) getParameter.invoke(url, "side");
-                if (side != null) {
-                    return "consumer".equals(side);
+                if ("consumer".equals(side)) {
+                    return true;
+                }
+                if ("provider".equals(side)) {
+                    return false;
                 }
             }
         } catch (Exception ignored) {
         }
-        // fallback: check if invoker URL has remote protocol
+
+        // 2nd priority: check if incoming trace headers exist in attachments
+        // If trace headers are already present, this is the provider receiving a call
+        String incomingTraceId = getAttachment(invocation, "X-Trace-Id");
+        if (incomingTraceId != null && !incomingTraceId.isEmpty()) {
+            return false;
+        }
+
+        // 3rd priority: check RpcContext.getContext().isConsumerSide()
         try {
-            java.lang.reflect.Method getUrl = invoker.getClass().getMethod("getUrl");
-            Object url = getUrl.invoke(invoker);
-            if (url != null) {
-                java.lang.reflect.Method getProtocol = url.getClass().getMethod("getProtocol");
-                String protocol = (String) getProtocol.invoke(url);
-                return !"injvm".equals(protocol);
+            Class<?> rpcContextClass = null;
+            try {
+                rpcContextClass = Class.forName("org.apache.dubbo.rpc.RpcContext");
+            } catch (ClassNotFoundException e) {
+                rpcContextClass = Class.forName("com.alibaba.dubbo.rpc.RpcContext");
+            }
+            java.lang.reflect.Method getContext = rpcContextClass.getMethod("getContext");
+            Object rpcContext = getContext.invoke(null);
+            java.lang.reflect.Method isConsumerSide = rpcContext.getClass().getMethod("isConsumerSide");
+            Boolean result = (Boolean) isConsumerSide.invoke(rpcContext);
+            if (result != null) {
+                return result;
             }
         } catch (Exception ignored) {
         }
-        return true;
+
+        // Default: assume consumer if we have existing local context (we initiated the call)
+        return TraceContext.getSpanId() != null;
     }
 
     private static String getAttachment(Object invocation, String key) {
