@@ -1,0 +1,25 @@
+spring:
+  kafka:
+    bootstrap-servers: localhost:9092
+    consumer:
+      group-id: rca-group
+      auto-offset-reset: latest
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.apache.kafka.common.serialization.StringSerializer
+
+neo4j:
+  uri: bolt://localhost:7687
+  username: neo4j
+  password: ${NEO4J_PASSWORD:password}
+
+rca:
+  error-rate-threshold: 0.05
+  p99-latency-threshold-ms: 500
+  latency-spike-multiplier: 3.0
+  baseline-window-count: 30
+  ema-alpha: 0.1
+
+logging:
+  level:
+    com.trace: DEBUG

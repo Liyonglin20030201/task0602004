@@ -1,0 +1,15 @@
+spring:
+  kafka:
+    bootstrap-servers: localhost:9092
+    consumer:
+      group-id: graph-collector-group
+      auto-offset-reset: earliest
+
+neo4j:
+  uri: bolt://localhost:7687
+  username: neo4j
+  password: ${NEO4J_PASSWORD:password}
+
+logging:
+  level:
+    com.trace: DEBUG
