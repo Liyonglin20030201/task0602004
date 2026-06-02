@@ -12,40 +12,59 @@ import org.apache.http.HttpResponse;
 public class HttpClientInterceptor {
 
     @Advice.OnMethodEnter
-    public static long onEnter(@Advice.Argument(1) HttpRequest request) {
-        String traceId = TraceContext.getTraceId();
+    public static Object[] onEnter(@Advice.Argument(1) HttpRequest request) {
+        String savedTraceId = TraceContext.getTraceId();
+        String savedSpanId = TraceContext.getSpanId();
+        String savedParentSpanId = TraceContext.getParentSpanId();
+
+        String traceId = savedTraceId;
         if (traceId == null) {
             traceId = IdGenerator.generateTraceId();
-            TraceContext.setTraceId(traceId);
         }
 
-        String currentSpanId = TraceContext.getSpanId();
         String newSpanId = IdGenerator.generateSpanId();
 
         request.setHeader(TraceHeaders.TRACE_ID, traceId);
         request.setHeader(TraceHeaders.SPAN_ID, newSpanId);
-        if (currentSpanId != null) {
-            request.setHeader(TraceHeaders.PARENT_SPAN_ID, currentSpanId);
+        if (savedSpanId != null) {
+            request.setHeader(TraceHeaders.PARENT_SPAN_ID, savedSpanId);
         }
 
-        TraceContext.setParentSpanId(currentSpanId);
+        TraceContext.setTraceId(traceId);
         TraceContext.setSpanId(newSpanId);
+        TraceContext.setParentSpanId(savedSpanId);
 
-        return System.currentTimeMillis();
+        return new Object[]{
+                System.currentTimeMillis(),
+                traceId,
+                newSpanId,
+                savedSpanId,
+                savedTraceId,
+                savedSpanId,
+                savedParentSpanId
+        };
     }
 
     @Advice.OnMethodExit(onThrowable = Throwable.class)
     public static void onExit(@Advice.Argument(1) HttpRequest request,
-                              @Advice.Enter long startTime,
+                              @Advice.Enter Object[] entered,
                               @Advice.Thrown Throwable thrown,
                               @Advice.Return Object response) {
+        long startTime = (Long) entered[0];
+        String traceId = (String) entered[1];
+        String spanId = (String) entered[2];
+        String parentSpanId = (String) entered[3];
+        String origTraceId = (String) entered[4];
+        String origSpanId = (String) entered[5];
+        String origParentSpanId = (String) entered[6];
+
         try {
             long duration = System.currentTimeMillis() - startTime;
 
             Span span = new Span();
-            span.setTraceId(TraceContext.getTraceId());
-            span.setSpanId(TraceContext.getSpanId());
-            span.setParentSpanId(TraceContext.getParentSpanId());
+            span.setTraceId(traceId);
+            span.setSpanId(spanId);
+            span.setParentSpanId(parentSpanId);
             span.setServiceName(TraceContext.getServiceName());
             span.setStartTime(startTime);
             span.setDuration(duration);
@@ -71,8 +90,21 @@ public class HttpClientInterceptor {
                 reporter.report(span);
             }
         } finally {
-            String parentSpanId = TraceContext.getParentSpanId();
-            TraceContext.setSpanId(parentSpanId);
+            if (origTraceId != null) {
+                TraceContext.setTraceId(origTraceId);
+            } else {
+                TraceContext.setTraceId(null);
+            }
+            if (origSpanId != null) {
+                TraceContext.setSpanId(origSpanId);
+            } else {
+                TraceContext.setSpanId(null);
+            }
+            if (origParentSpanId != null) {
+                TraceContext.setParentSpanId(origParentSpanId);
+            } else {
+                TraceContext.setParentSpanId(null);
+            }
         }
     }
 }

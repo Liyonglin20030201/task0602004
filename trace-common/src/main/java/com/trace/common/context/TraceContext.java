@@ -5,7 +5,7 @@ public final class TraceContext {
     private static final ThreadLocal<String> TRACE_ID = new InheritableThreadLocal<>();
     private static final ThreadLocal<String> SPAN_ID = new InheritableThreadLocal<>();
     private static final ThreadLocal<String> PARENT_SPAN_ID = new InheritableThreadLocal<>();
-    private static final ThreadLocal<String> SERVICE_NAME = new InheritableThreadLocal<>();
+    private static volatile String serviceName = "unknown-service";
 
     private TraceContext() {
     }
@@ -15,7 +15,11 @@ public final class TraceContext {
     }
 
     public static void setTraceId(String traceId) {
-        TRACE_ID.set(traceId);
+        if (traceId == null) {
+            TRACE_ID.remove();
+        } else {
+            TRACE_ID.set(traceId);
+        }
     }
 
     public static String getSpanId() {
@@ -23,7 +27,11 @@ public final class TraceContext {
     }
 
     public static void setSpanId(String spanId) {
-        SPAN_ID.set(spanId);
+        if (spanId == null) {
+            SPAN_ID.remove();
+        } else {
+            SPAN_ID.set(spanId);
+        }
     }
 
     public static String getParentSpanId() {
@@ -31,20 +39,62 @@ public final class TraceContext {
     }
 
     public static void setParentSpanId(String parentSpanId) {
-        PARENT_SPAN_ID.set(parentSpanId);
+        if (parentSpanId == null) {
+            PARENT_SPAN_ID.remove();
+        } else {
+            PARENT_SPAN_ID.set(parentSpanId);
+        }
     }
 
     public static String getServiceName() {
-        return SERVICE_NAME.get();
+        return serviceName;
     }
 
-    public static void setServiceName(String serviceName) {
-        SERVICE_NAME.set(serviceName);
+    public static void setServiceName(String name) {
+        serviceName = name;
     }
 
     public static void clear() {
         TRACE_ID.remove();
         SPAN_ID.remove();
         PARENT_SPAN_ID.remove();
+    }
+
+    public static ContextSnapshot snapshot() {
+        return new ContextSnapshot(TRACE_ID.get(), SPAN_ID.get(), PARENT_SPAN_ID.get());
+    }
+
+    public static void restore(ContextSnapshot snapshot) {
+        if (snapshot == null) {
+            clear();
+            return;
+        }
+        if (snapshot.traceId != null) {
+            TRACE_ID.set(snapshot.traceId);
+        } else {
+            TRACE_ID.remove();
+        }
+        if (snapshot.spanId != null) {
+            SPAN_ID.set(snapshot.spanId);
+        } else {
+            SPAN_ID.remove();
+        }
+        if (snapshot.parentSpanId != null) {
+            PARENT_SPAN_ID.set(snapshot.parentSpanId);
+        } else {
+            PARENT_SPAN_ID.remove();
+        }
+    }
+
+    public static class ContextSnapshot {
+        private final String traceId;
+        private final String spanId;
+        private final String parentSpanId;
+
+        private ContextSnapshot(String traceId, String spanId, String parentSpanId) {
+            this.traceId = traceId;
+            this.spanId = spanId;
+            this.parentSpanId = parentSpanId;
+        }
     }
 }
